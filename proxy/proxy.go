@@ -19,12 +19,18 @@ import (
 
 // ConnectProxy is an HTTP CONNECT proxy with selective SSL bump.
 // Hosts that have a matching credential provider are MITM'd (SSL bumped)
-// to inject credentials. All other allowed hosts are raw-tunneled.
+// to inject credentials. All other hosts are either denied or transparently
+// tunneled, depending on AllowNonProviderPassthrough.
 type ConnectProxy struct {
 	CA        *CertAuthority
 	Manifests manifest.Registry
 	Providers *providers.Registry
 	Logger    *slog.Logger
+
+	// AllowNonProviderPassthrough controls whether CONNECT requests to hosts
+	// without a credential provider are transparently tunneled (true) or
+	// denied with 403 (false). Default is false (deny-by-default).
+	AllowNonProviderPassthrough bool
 
 	// UpstreamTLSConfig is the TLS config used for outbound connections to
 	// upstream servers during SSL bump. If nil, defaults to system roots.
@@ -107,38 +113,34 @@ func (p *ConnectProxy) handleConnect(clientConn net.Conn, req *http.Request, cli
 		port = "443"
 	}
 
-	// Step 1: Validate host against manifests.
-	if !p.isHostAllowed(host) {
-		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 403 Forbidden\r\n\r\nhost %s not allowed by manifest\r\n", host)
-		p.logProxy(host, "denied_host", "host not in manifest", start)
-		return
-	}
-
-	// Step 2: SSRF protection.
-	dest := p.findDestination(host)
-	var allowedCIDRs []string
-	if dest != nil {
-		allowedCIDRs = dest.AllowedIPs
-	}
-	if err := manifest.CheckSSRF(host, allowedCIDRs); err != nil {
-		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 403 Forbidden\r\n\r\nSSRF: %s\r\n", err.Error())
-		p.logProxy(host, "denied_ssrf", err.Error(), start)
-		return
-	}
-
-	// Step 3: Determine if we should SSL bump.
-	// Only MITM hosts that have a matching credential provider.
-	provider, hasProvider := p.Providers.ForHost(host)
-
-	// Send 200 Connection Established.
-	_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
-
 	targetAddr := net.JoinHostPort(host, port)
 
+	// Step 1: Check if this host has a credential provider (needs MITM).
+	provider, hasProvider := p.Providers.ForHost(host)
+
 	if hasProvider {
+		// SSRF protection only for MITM'd hosts (we're injecting credentials).
+		dest := p.findDestination(host)
+		var allowedCIDRs []string
+		if dest != nil {
+			allowedCIDRs = dest.AllowedIPs
+		}
+		if err := manifest.CheckSSRF(host, allowedCIDRs); err != nil {
+			_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 403 Forbidden\r\n\r\nSSRF: %s\r\n", err.Error())
+			p.logProxy(host, "denied_ssrf", err.Error(), start)
+			return
+		}
+
+		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		p.handleBump(clientConn, host, targetAddr, provider, clientIP, start)
-	} else {
+	} else if p.AllowNonProviderPassthrough {
+		// No provider, passthrough enabled — tunnel transparently.
+		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		p.handleTunnel(clientConn, targetAddr, start)
+	} else {
+		// No provider, passthrough disabled — deny.
+		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 403 Forbidden\r\n\r\nhost %s has no credential provider and passthrough is disabled\r\n", host)
+		p.logProxy(host, "denied_no_provider", "passthrough disabled", start)
 	}
 }
 

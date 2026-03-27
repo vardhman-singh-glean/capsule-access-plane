@@ -30,6 +30,7 @@ func main() {
 
 	proxyAddr := os.Getenv("PROXY_ADDR")
 	// PROXY_ADDR empty means no CONNECT proxy (backward compatible).
+	proxyAllowPassthrough := os.Getenv("PROXY_ALLOW_PASSTHROUGH") == "true"
 
 	// Read attestation secret (required)
 	attestationSecret := os.Getenv("ATTESTATION_SECRET")
@@ -173,10 +174,11 @@ func main() {
 			os.Exit(1)
 		}
 		connectProxy := &proxy.ConnectProxy{
-			CA:        ca,
-			Manifests: registry,
-			Providers: providerRegistry,
-			Logger:    logger,
+			CA:                         ca,
+			Manifests:                  registry,
+			Providers:                  providerRegistry,
+			Logger:                     logger,
+			AllowNonProviderPassthrough: proxyAllowPassthrough,
 		}
 
 		// Expose the MITM CA cert so clients can trust the proxy.

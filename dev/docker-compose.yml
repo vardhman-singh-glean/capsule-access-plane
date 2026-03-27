@@ -8,6 +8,9 @@ services:
       - data:/data
     environment:
       - DATABASE_URL=/data/capsule-access.db
+      # Allow non-provider hosts to be tunneled transparently.
+      # Set to "true" for local dev; omit or "false" in production.
+      - PROXY_ALLOW_PASSTHROUGH=${PROXY_ALLOW_PASSTHROUGH:-true}
 
 volumes:
   data:

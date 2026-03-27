@@ -252,10 +252,11 @@ func TestProxy_CONNECT_Tunnel_NoProvider(t *testing.T) {
 	provReg := providers.NewRegistry()
 
 	proxy := &ConnectProxy{
-		CA:        ca,
-		Manifests: reg,
-		Providers: provReg,
-		Logger:    slog.Default(),
+		CA:                         ca,
+		Manifests:                  reg,
+		Providers:                  provReg,
+		Logger:                     slog.Default(),
+		AllowNonProviderPassthrough: true,
 	}
 	proxyAddr := startProxy(t, proxy)
 
